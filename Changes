@@ -1,6 +1,10 @@
 Changes
 =======
 
+0.02010 - 26 Oct 2010
+  - walk_stats() now returns many more items in the totals hash
+  - require Memcached::libmemcached 0.4402
+
 0.02010 - 07 Sep 2009
   - overhaul tests
   - require Memcached::libmemcached 0.3102

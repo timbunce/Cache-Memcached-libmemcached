@@ -237,32 +237,54 @@ sub version {
 
 sub stats
 {
-    my %h;
-    my %misc_keys = map { ($_ => 1) }
-      qw/ bytes bytes_read bytes_written
-          cmd_get cmd_set connection_structures curr_items
-          get_hits get_misses
-          total_connections total_items
-        /; 
-    my $code = sub {
-        my($key, $value, $hostport, $type) = @_;
+    my $self = shift;
+    my ($stats_args) = @_;
 
-        # XXX - This is hardcoded in the callback cause r139 in perl-memcached
-        # removed the magic of "misc"
-        $type ||= 'misc';
-        $h{hosts}{$hostport}{$type}{$key} = $value;
-        if ($type eq 'misc') {
-            if ($misc_keys{$key}) {
-                $h{total}{$key} ||= 0;
-                $h{total}{$key} += $value;
+    # http://github.com/memcached/memcached/blob/master/doc/protocol.txt
+    $stats_args ||= [
+        # XXX 'malloc' and 'self' aren't valid at the protocol level but are
+        # possibly mapped to something else in deeper code?
+        '', 'malloc', 'sizes', 'self',
+        # 'items', 'slabs', 'settings'
+    ];
+
+    # stats keys that aren't matched by the prefix and suffix regexes below
+    # but which we want to accumulate in totals
+    my %total_misc_keys = map { ($_ => 1) } qw(
+        bytes evictions
+        connection_structures curr_connections total_connections
+    ); 
+
+    my %h;
+    for my $type (@$stats_args) {
+
+        my $code = sub {
+            my ($key, $value, $hostport) = @_;
+
+            # XXX - This is hardcoded in the callback cause r139 in perl-memcached
+            # removed the magic of "misc"
+            $type ||= 'misc';
+            $h{hosts}{$hostport}{$type}{$key} = $value;
+            #warn "$_ ($key, $value, $hostport, $type)\n";
+
+            # accumulate overall totals for some items
+            if ($type eq 'misc') {
+                if ($total_misc_keys{$key}
+                or $key =~ /^(?:cmd|bytes)_/ # prefixes
+                or $key =~ /_(?:hits|misses|errors|yields|badval|items|read|written)$/ # suffixes
+                ) {
+                    $h{total}{$key} += $value;
+                }
             }
-        } elsif ($type eq 'malloc') {
-            $h{total}{"malloc_$key"} ||= 0;
-            $h{total}{"malloc_$key"} += $value;
-        }
-        return ();
-    };
-    $_[0]->walk_stats($_, $code) for ('', qw(malloc sizes self));
+            elsif ($type eq 'malloc' or $type eq 'sizes') {
+                $h{total}{"${type}_$key"} += $value;
+            }
+            return;
+        };
+
+        $self->walk_stats($type, $code);
+    }
+
     return \%h;
 }
 
