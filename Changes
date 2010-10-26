@@ -1,9 +1,11 @@
 Changes
 =======
 
-0.02010 - 26 Oct 2010
+0.02011 - 26 Oct 2010
+  - Many more libmemcached behaviours are now accessible.
   - walk_stats() now returns many more items in the totals hash
-  - require Memcached::libmemcached 0.4402
+  - Fixed compression, thanks to Ask Bjørn Hansen, RT#46985
+  - Require Memcached::libmemcached 0.4402
 
 0.02010 - 07 Sep 2009
   - overhaul tests

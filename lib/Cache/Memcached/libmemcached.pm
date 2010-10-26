@@ -7,7 +7,7 @@ use Carp qw(croak);
 use Scalar::Util qw(weaken);
 use Storable ();
 
-our $VERSION = '0.02010';
+our $VERSION = '0.02011';
 
 use constant HAVE_ZLIB    => eval { require Compress::Zlib } && !$@;
 use constant F_STORABLE   => 1;
@@ -30,6 +30,7 @@ BEGIN
         die if $@;
     }
 
+    # XXX this should be done via subclasses
     if (OPTIMIZE) {
         # If the optimize flag is enabled, we do not support master key
         # generation, cause we really care about the speed.
@@ -106,7 +107,9 @@ sub new
     );
 
     # behavior options
-    foreach my $option qw(no_block hashing_algorithm distribution_method binary_protocol) {
+    foreach my $option qw(
+        no_block hashing_algorithm distribution_method binary_protocol
+    ) {
         my $method = "set_$option";
         $self->$method( $args->{$option} ) if exists $args->{$option};
     }
@@ -174,7 +177,7 @@ sub _mk_callbacks
             my $length = bytes::length($_);
             if ($length > $self->{compress_threshold}) {
                 my $tmp = Compress::Zlib::memGzip($_);
-                if (1 - bytes::length($tmp) / $length < $self->{compress_savingsS}) {
+                if (bytes::length($tmp) / $length < 1 - $self->{compress_savingsS}) {
                     $_ = $tmp;
                     $_[1] |= F_COMPRESS;
                 }
@@ -290,35 +293,45 @@ sub stats
 
 BEGIN
 {
-    my @boolean_behavior = qw( no_block binary_protocol );
+    my @boolean_behavior = qw(
+        no_block binary_protocol tcp_nodelay use_udp noreply
+        verify_key sort_hosts
+    );
+    # These are documented by libmemcached but don't exist:
+    # keepalive (MEMCACHED_BEHAVIOR_KEEPALIVE)
     my %behavior = (
         distribution_method => 'distribution',
-        hashing_algorithm   => 'hash'
+        hashing_algorithm   => 'hash',
+        # others, where we use the same name as Memcached::libmemcached
+        map { $_ => $_ } qw(
+            snd_timeout rcv_timeout poll_timeout connect_timeout
+            buffer_requests server_failure_limit auto_eject_hosts retry_timeout
+            io_msg_watermark io_bytes_watermark io_key_prefetch
+            number_of_replicas randomize_replica_read
+            socket_send_size socket_recv_size
+        )
+        # These are documented by libmemcached but don't exist:
+        # keepalive_idle (MEMCACHED_BEHAVIOR_KEEPALIVE_IDLE)
     );
 
     foreach my $name (@boolean_behavior) {
-        my $code = sprintf(<<'        EOSUB', $name, uc $name, $name, uc $name);
-            sub is_%s {
-                $_[0]->memcached_behavior_get( Memcached::libmemcached::MEMCACHED_BEHAVIOR_%s() );
-            }
-
-            sub set_%s {
-                $_[0]->memcached_behavior_set( Memcached::libmemcached::MEMCACHED_BEHAVIOR_%s(), $_[1] );
-            }
+        my $behaviour = "Memcached::libmemcached::MEMCACHED_BEHAVIOR_\U$name";
+        warn "$behaviour doesn't exist\n" unless defined &$behaviour;
+        my $code = sprintf(<<'        EOSUB', $name, $behaviour, $name, $behaviour);
+            sub is_%s  { $_[0]->memcached_behavior_get( %s()        ) }
+            sub set_%s { $_[0]->memcached_behavior_set( %s(), $_[1] ) }
         EOSUB
         eval $code;
         die if $@;
     }
 
     while (my($method, $field) = each %behavior) {
-        my $code = sprintf(<<'        EOSUB', $method, uc $field, $method, uc $field);
-            sub get_%s {
-                $_[0]->memcached_behavior_get( Memcached::libmemcached::MEMCACHED_BEHAVIOR_%s() );
-            }
-
-            sub set_%s {
-                $_[0]->memcached_behavior_set( Memcached::libmemcached::MEMCACHED_BEHAVIOR_%s(), $_[1]);
-            }
+        my $behaviour = "Memcached::libmemcached::MEMCACHED_BEHAVIOR_\U$field";
+        no strict 'refs';
+        warn "$behaviour doesn't exist\n" unless defined &$behaviour;
+        my $code = sprintf(<<'        EOSUB', $method, $behaviour, $method, $behaviour);
+            sub get_%s { $_[0]->memcached_behavior_get( %s()       ) }
+            sub set_%s { $_[0]->memcached_behavior_set( %s(), $_[1]) }
         EOSUB
         eval $code;
         die if $@;
