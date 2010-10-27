@@ -1,18 +1,22 @@
-
 package Cache::Memcached::libmemcached;
+
 use strict;
 use warnings;
+
 use base qw(Memcached::libmemcached);
-use Carp qw(croak);
+
+use Carp qw(croak carp);
 use Scalar::Util qw(weaken);
 use Storable ();
 
-our $VERSION = '0.02011';
+our $VERSION = '0.03001';
 
 use constant HAVE_ZLIB    => eval { require Compress::Zlib } && !$@;
 use constant F_STORABLE   => 1;
 use constant F_COMPRESS   => 2;
 use constant OPTIMIZE     => $ENV{PERL_LIBMEMCACHED_OPTIMIZE} ? 1 : 0;
+
+my %behavior;
 
 BEGIN
 {
@@ -75,6 +79,36 @@ BEGIN
             die if $@;
         }
     }
+
+    # Create get_*/is_*/set_* methods for some libmemcached behaviors.
+    # We only do this for some because there are many and it's easy for
+    # the user to use memcached_behavior_set() etc directly.
+    #
+    %behavior = (
+        # non-boolean behaviors that are renamed (to be more descriptive)
+        distribution_method => [ 0, 'distribution' ],
+        hashing_algorithm   => [ 0, 'hash' ],
+        # boolean behaviors that are not renamed:
+        no_block        => [ 1 ],
+        binary_protocol => [ 1 ],
+    );
+
+    while ( my ($method, $field_info) = each %behavior ) {
+        my $is_bool = $field_info->[0];
+        my $field   = $field_info->[1] || $method;
+
+        my $behavior = "Memcached::libmemcached::MEMCACHED_BEHAVIOR_\U$field";
+        warn "$behavior doesn't exist\n" # sanity check
+            unless do { no strict 'refs'; defined &$behavior };
+
+        my ($set, $get) = ("set_$method", "get_$method");
+        $get = "is_$method" if $is_bool;
+        my $code = "sub $set { \$_[0]->memcached_behavior_set($behavior(), \$_[1]) }\n"
+                 . "sub $get { \$_[0]->memcached_behavior_get($behavior()) }";
+        eval $code;
+        die "$@ while executing $code" if $@;
+    }
+
 }
 
 sub import
@@ -86,35 +120,53 @@ sub import
 sub new
 {
     my $class = shift;
-    my $args  = shift || {};
-
-    $args->{servers} || die "No servers specified";
+    my %args  = %{ shift || {} };
 
     my $self = $class->SUPER::new();
 
-    $self->{compress_threshold} = $args->{compress_threshold};
-    $self->{compress_savingsS}   = $args->{compress_savings} || 0.20;
+    $self->{compress_threshold} = delete $args{compress_threshold};
+    # Add support for Cache::Memcache::Fast's compress_ratio
+    $self->{compress_savingsS}  = delete $args{compress_savings} || 0.20;
     $self->{compress_enable}    =
-        exists $args->{compress_enable} ? $args->{compress_enable} : 1;
+        exists $args{compress_enable} ? delete $args{compress_enable} : 1;
 
     # servers 
-    $self->set_servers($args->{servers});
+    $args{servers} || croak "No servers specified";
+    $self->set_servers(delete $args{servers});
+
+    # old-style behavior options (see behavior_ block below)
+    foreach my $option (qw(no_block hashing_algorithm distribution_method binary_protocol)) {
+        my $behavior = $behavior{$option}->[1] || $option;
+        $args{"behavior_$behavior"} = delete $args{$option} if exists $args{$option};
+    }
+
+    # allow any libmemcached behavior to be set via args to new()
+    for my $name (grep { /^behavior_/ } keys %args) {
+        my $value = delete $args{$name};
+        my $behavior = "Memcached::libmemcached::MEMCACHED_\U$name";
+        no strict 'refs';
+        if (not defined &$behavior) {
+            carp "$name ($behavior) isn't available"; # sanity check
+            next;
+        }
+        $self->memcached_behavior_set(&$behavior(), $value);
+    }
+
+    $self->{namespace} = delete $args{namespace} || '';
+
+
+    $self->trace_level(delete $args{debug}) if exists $args{debug};
+    delete $args{readonly};
+    delete $args{no_rehash};
+
+    carp "Unrecognised options: @{[ sort keys %args ]}"
+        if %args;
 
     # Set compression/serialization callbacks
     $self->set_callback_coderefs(
         # Closures so we have reference to $self
         $self->_mk_callbacks()
     );
-
-    # behavior options
-    foreach my $option qw(
-        no_block hashing_algorithm distribution_method binary_protocol
-    ) {
-        my $method = "set_$option";
-        $self->$method( $args->{$option} ) if exists $args->{$option};
-    }
-
-    $self->{namespace} = $args->{namespace} || '';
 
     return $self;
 }
@@ -131,18 +183,30 @@ sub set_servers
 sub server_add
 {
     my $self = shift;
-    my $server = shift;
+    my $server = shift
+        or Carp::confess("server not specified");
 
-    if (! defined $server) {
-        Carp::confess("server is not defined");
+    my $weight = 0;
+    if (ref $server eq 'ARRAY') {
+        my @ary = @$server;
+        $server = shift @ary;
+        $weight = shift @ary || 0 if @ary;
     }
+    elsif (ref $server eq 'HASH') { # Cache::Memcached::Fast
+        my $h = $server;
+        $server = $h->{address};
+        $weight = $h->{weight} if exists $h->{weight};
+        # noreply is not supported
+    }
+
     if ($server =~ /^([^:]+):([^:]+)$/) {
         my ($hostname, $port) = ($1, $2);
-        $self->memcached_server_add($hostname, $port );
+        $self->memcached_server_add_with_weight($hostname, $port, $weight);
     } else {
-        $self->memcached_server_add_unix_socket( $server );
+        $self->memcached_server_add_unix_socket_with_weight( $server, $weight );
     }
 }
+
 
 sub _mk_callbacks
 {
@@ -244,12 +308,9 @@ sub stats
     my ($stats_args) = @_;
 
     # http://github.com/memcached/memcached/blob/master/doc/protocol.txt
-    $stats_args ||= [
-        # XXX 'malloc' and 'self' aren't valid at the protocol level but are
-        # possibly mapped to something else in deeper code?
-        '', 'malloc', 'sizes', 'self',
-        # 'items', 'slabs', 'settings'
-    ];
+    $stats_args = [ $stats_args ]
+        if $stats_args and not ref $stats_args;
+    $stats_args ||= [ '' ];
 
     # stats keys that aren't matched by the prefix and suffix regexes below
     # but which we want to accumulate in totals
@@ -291,68 +352,26 @@ sub stats
     return \%h;
 }
 
-BEGIN
-{
-    my @boolean_behavior = qw(
-        no_block binary_protocol tcp_nodelay use_udp noreply
-        verify_key sort_hosts
-    );
-    # These are documented by libmemcached but don't exist:
-    # keepalive (MEMCACHED_BEHAVIOR_KEEPALIVE)
-    my %behavior = (
-        distribution_method => 'distribution',
-        hashing_algorithm   => 'hash',
-        # others, where we use the same name as Memcached::libmemcached
-        map { $_ => $_ } qw(
-            snd_timeout rcv_timeout poll_timeout connect_timeout
-            buffer_requests server_failure_limit auto_eject_hosts retry_timeout
-            io_msg_watermark io_bytes_watermark io_key_prefetch
-            number_of_replicas randomize_replica_read
-            socket_send_size socket_recv_size
-        )
-        # These are documented by libmemcached but don't exist:
-        # keepalive_idle (MEMCACHED_BEHAVIOR_KEEPALIVE_IDLE)
-    );
-
-    foreach my $name (@boolean_behavior) {
-        my $behaviour = "Memcached::libmemcached::MEMCACHED_BEHAVIOR_\U$name";
-        warn "$behaviour doesn't exist\n" unless defined &$behaviour;
-        my $code = sprintf(<<'        EOSUB', $name, $behaviour, $name, $behaviour);
-            sub is_%s  { $_[0]->memcached_behavior_get( %s()        ) }
-            sub set_%s { $_[0]->memcached_behavior_set( %s(), $_[1] ) }
-        EOSUB
-        eval $code;
-        die if $@;
-    }
-
-    while (my($method, $field) = each %behavior) {
-        my $behaviour = "Memcached::libmemcached::MEMCACHED_BEHAVIOR_\U$field";
-        no strict 'refs';
-        warn "$behaviour doesn't exist\n" unless defined &$behaviour;
-        my $code = sprintf(<<'        EOSUB', $method, $behaviour, $method, $behaviour);
-            sub get_%s { $_[0]->memcached_behavior_get( %s()       ) }
-            sub set_%s { $_[0]->memcached_behavior_set( %s(), $_[1]) }
-        EOSUB
-        eval $code;
-        die if $@;
-    }
-
-}
-
 1;
 
 __END__
 
 =head1 NAME
 
-Cache::Memcached::libmemcached - Perl Interface to libmemcached
+Cache::Memcached::libmemcached - Cache interface to Memcached::libmemcached
 
 =head1 SYNOPSIS
 
   use Cache::Memcached::libmemcached;
+
   my $memd = Cache::Memcached::libmemcached->new({
-    servers => [ "10.0.0.15:11211", "10.0.0.15:11212", "/var/sock/memcached" ],
-    compress_threshold => 10_000
+      servers => [
+            "10.0.0.15:11211",
+            [ "10.0.0.15:11212", 2 ], # weight
+            "/var/sock/memcached"
+      ],
+      compress_threshold => 10_000,
+      # ... many more options supported
   });
 
   $memd->set("my_key", "Some value");
@@ -360,7 +379,7 @@ Cache::Memcached::libmemcached - Perl Interface to libmemcached
 
   $val = $memd->get("my_key");
   $val = $memd->get("object_key");
-  if ($val) { print $val->{complex}->[2] }
+  print $val->{complex}->[2] if $val;
 
   $memd->incr("key");
   $memd->decr("key");
@@ -371,27 +390,25 @@ Cache::Memcached::libmemcached - Perl Interface to libmemcached
 
   my $hashref = $memd->get_multi(@keys);
 
-  # Constants - explicitly by name or by tags
-  #    see Memcached::libmemcached::constants for a list
+  # Import Memcached::libmemcached constants - explicitly by name or by tags
+  # see Memcached::libmemcached::constants for a list
   use Cache::Memcached::libmemcached qw(MEMCACHED_DISTRIBUTION_CONSISTENT);
   use Cache::Memcached::libmemcached qw(
-    :defines
-    :memcached_allocated
-    :memcached_behavior
-    :memcached_callback
-    :memcached_connection
-    :memcached_hash
-    :memcached_return
-    :memcached_server_distribution
+      :defines
+      :memcached_allocated
+      :memcached_behavior
+      :memcached_callback
+      :memcached_connection
+      :memcached_hash
+      :memcached_return
+      :memcached_server_distribution
   );
 
-  # Extra constructor options that are not in Cache::Memcached
-  # See Memcached::libmemcached::constants for a list of available options
   my $memd = Cache::Memcached::libmemcached->new({
-    ...,
-    no_block            => $boolean,
-    distribution_method => $distribution_method,
-    hashing_algorithm   => $hashing_algorithm,
+      distribution_method => MEMCACHED_DISTRIBUTION_CONSISTENT,
+      hashing_algorithm   => MEMCACHED_HASH_FNV1A_32,
+      behavior_... => ...,
+      ...
   });
 
 =head1 DESCRIPTION
@@ -404,55 +421,79 @@ While Memcached::libmemcached aims to port libmemcached API to perl,
 Cache::Memcached::libmemcached attempts to be API compatible with
 Cache::Memcached, so it can be used as a drop-in replacement.
 
-Note that as of version 0.02000, Cache::Memcached::libmemcached I<inherits>
-from Memcached::libmemcached. While you are free to use the 
-Memcached::libmemcached specific methods directly on the object, you should
-use them with care, as it will mean that your code is no longer compatible
-with the Cache::Memcached API therefore losing some of th portability in
+Cache::Memcached::libmemcached I<inherits> from Memcached::libmemcached.
+While you are free to use the Memcached::libmemcached specific methods directly
+on the object, doing so will mean that your code is no longer compatible with
+the original Cache::Memcached API therefore losing some of the portability in
 case you want to replace it with some other package.
-
-=head1 FOR Cache::Memcached::LibMemcached USERS
-
-Cache::Memcached::libmemcached is a rewrite of Cache::Memcached::LibMemcached,
-using Memcached::libmemcached instead of straight XS as its backend.
-
-Therefore you might notice some differences. Here are the ones we are
-aware of:
-
-=over 4
-
-=item cas() is not implemented
-
-This was sort of implemented in a previous life, but since 
-Memcached::libmemcached is still undecided how to handle it, we don't
-support it either.
-
-=item performance is probably a bit different
-
-To be honest, we haven't ran benchmarks comparing the two (yet). In general,
-you might see a decrease in performance here and there because we've
-essentially added another call stack (instead of going straight from perl to
-XS, we are now going from perl to perl to XS). But on the other hand, 
-Memcached::libmemcached is in the hands of XS gurus like Time Bunce, so
-you are probably sparing yourself some accidental hooplas that occasional
-C programmers like me might introduce.
-
-=back
 
 =head1 Cache::Memcached COMPATIBLE METHODS
 
-Except for the minor incompatiblities, below methods are generally compatible 
-with Cache::Memcached.
+Except for the minor incompatiblities, below methods are compatible with
+Cache::Memcached.
 
 =head2 new
 
-Takes on parameter, a hashref of options.
+Takes one parameter, a hashref of options.
+
+=head3 Cache::Memcached options:
+
+=head3 servers
+
+The value is passed to the L</set_servers> method.
+
+=head3 compress_threshold
+
+Set a compression threshold, in bytes. Values larger than this threshold will
+be compressed by set and decompressed by get.
+
+=head3 namespace
+
+Prefix all keys with the provided namespace value. That is, if you set
+namespace to "app1:" and later do a set of "foo" to "bar", memcached is
+actually seeing you set "app1:foo" to "bar".
+
+=head3 debug
+
+Sets the C<trace_level> for the Memcached::libmemcached object.
+
+=head3 readonly, no_rehash
+
+These Cache::Memcached options are not supported.
+
+=head3 Options specific to Cache::Memcached::libmemcached:
+
+=head3 compress_savings
+
+=head3 behavior_*
+
+Any of the I<many> behaviors documented in
+L<Memcached::libmemcached::memcached_behavior> can be specified by using
+argument key names that start with C<behavior_>. For example:
+
+    behavior_support_cas => 1,
+    behavior_ketama_weighted => 1,
+    behavior_noreply => 1,
+    behavior_number_of_replicas => 2,
+    behavior_server_failure_limit => 3,
+    behavior_auto_eject_hosts => 1,
+
+=head3 no_block
+
+=head3 hashing_algorithm
+
+=head3 distribution_method
+
+=head3 binary_protocol
+
+These are equivalent to the same options prefixed with C<behavior_>.
 
 =head2 set_servers
 
-  $memd->set_servers( [ qw(serv1:port1 serv2:port2 ...) ]);
+  $memd->set_servers( [ 'serv1:port1', 'serv2:port2', ... ]);
 
-Sets the server list. 
+Calls L</server_add> for each element of the supplied arrayref.
+See L</server_add> for details of valid values, including how to specify weights.
 
 =head2 get
 
@@ -511,6 +552,7 @@ memcached > 1.2.4
 
   my $newval = $memd->incr($key);
   my $newval = $memd->decr($key);
+
   my $newval = $memd->incr($key, $offset);
   my $newval = $memd->decr($key, $offset);
 
@@ -522,11 +564,15 @@ by $key. Returns undef if the key doesn't exist on the server.
 =head2 remove
 
   $memd->delete($key);
+  $memd->delete($key, $time);
 
 Deletes a key.
 
-XXX - The behavior when second argument is specified may differ from
-Cache::Memcached -- this hasn't been very well tested. Patches welcome!
+If $time is non-zero then the item is marked for later expiration. Expiration
+works by placing the item into a delete queue, which means that it won't
+possible to retrieve it by the "get" command, but "add" and "replace" command
+with this key will also fail (the "set" command will succeed, however). After
+the time passes, the item is finally deleted from server memory.
 
 =head2 flush_all
 
@@ -551,9 +597,36 @@ from Cache::Memcached is, despite its naming, a setter as well.
 =head2 stats
 
   my $h = $memd->stats();
+  my $h = $memd->stats($keys);
 
-This method is still half-baked. It gives you some stats. If the values are
-wrong, well, reports, or better yet, patches welcome.
+Returns a hashref of statistical data regarding the memcache server(s), the
+$memd object, or both. $keys can be an arrayref of keys wanted, a single key
+wanted, or absent (in which case the default value is C<[ '' ]>). For each
+key the C<stats> command is run on each server.
+
+For example C<<$memd->stats([ '', 'sizes' ])>> would return a structure like
+this:
+
+    {
+        hosts => {
+            'N.N.N.N:P' => {
+                misc => {
+                    ...
+                },
+                sizes => {
+                    ...
+                },
+            },
+            ...,
+        },
+        totals => {
+            ...
+        }
+    }
+
+The general stats (where the key is "") are returned with a key of C<misc>.
+The C<totals> element contains the aggregate totals for all hosts of some of
+the statistics.
 
 =head2 disconnect_all
 
@@ -563,24 +636,15 @@ Disconnects from servers
 
   $memd->cas($key, $cas, $value[, $exptime]);
 
-XXX - This method is still broken.
+Overwrites data in the server as long as the "cas" value is still the same in
+the server.
 
-Sets if $cas matches the value on the server.
+You can get the cas value of a result by calling memcached_result_cas() on a
+memcached_result_st(3) structure.
 
-=head2 gets
+Support for "cas" is disabled by default as there is a slight performance
+penalty. To enable it use the C<support_cas> option to L</new>.
 
-=head2 get_cas
-
-  my $cas = $memd->gets($key);
-  my $cas = $memd->get_cas($key);
-
-Get the CAS value for $key
-
-=head2 get_cas_multi
-
-  my $h = $memd->get_cas_multi(@keys)
-
-Gets CAS values for multiple keys
 
 =head1 Cache::Memcached::libmemcached SPECIFIC METHODS
 
@@ -588,15 +652,12 @@ These methods are libmemcached-specific.
 
 =head2 server_add
 
-Adds a memcached server.
+    $self->server_add( $server_host_port );   # 10.10.10.10:11211
+    $self->server_add( $server_socket_path ); # /path/to/socket
+    $self->server_add( [ $server, $weight ] );
+    $self->server_add( { address => $server, weight => $weight } );
 
-=head2 server_add_unix_socket
-
-Adds a memcached server, connecting via unix socket.
-
-=head2 server_list_free
-
-Frees the memcached server list.
+Adds a memcached server address with an optional weight (default 0).
 
 =head1 UTILITY METHODS
 
@@ -689,7 +750,7 @@ Get the hashing algorithm used.
 
 Enable/disable CAS support.
 
-=head1 set_binary_protocol
+=head2 set_binary_protocol
 
   $memd->set_binary_protocol( 1 );
   $binary = $memd->is_binary_protocol();
@@ -718,42 +779,67 @@ main dev environment)
 
 =head2 Cache::Memcached
 
-This is the "main" module. It's mostly written in Perl.
+This is the "original" module. It's mostly written in Perl, is slow, and lacks
+significant features like support for the binary protocol.
 
 =head2 Cache::Memcached::libmemcached
 
-Cache::Memcached::libmemcached, which is the module for which your reading
-the document of, is a perl binding for libmemcached (http://tangent.org/552/libmemcached.html). Not to be confused with libmemcache (see below).
+Cache::Memcached::libmemcached, this module,
+is a perl binding for libmemcached (http://tangent.org/552/libmemcached.html).
+Not to be confused with libmemcache (see below).
 
 =head2 Cache::Memcached::Fast
 
 Cache::Memcached::Fast is a memcached client written in XS from scratch.
 As of this writing benchmarks shows that Cache::Memcached::Fast is faster on 
-get_multi(), and Cache::Memcached::libmemcached is faster on regular get()/set()
+get_multi(), and Cache::Memcached::libmemcached is faster on regular get()/set().
+Cache::Memcached::Fast doesn't support the binary protocol.
 
 =head2 Memcached::libmemcached
 
-Memcached::libmemcached is a straight binding to libmemcached, and is also
-the parent class of this module.
+Memcached::libmemcached is a thin binding to the libmemcached C library
+and provides access to most of the libmemcached API.
 
-It has most of the libmemcached API. If you don't care about a drop-in 
-replacement for Cache::Memcached, and want to benefit from low level API that
-libmemcached offers, this is the way to go.
+If you don't care about a drop-in replacement for Cache::Memcached, and want to
+benefit from the feature-rich efficient API that libmemcached offers, this is
+the way to go.
+
+Since the Memcached::libmemcached module is also the parent class of this module
+you can call Memcached::libmemcached methods directly.
 
 =head2 Cache::Memcached::XS
 
 Cache::Memcached::XS is a binding for libmemcache (http://people.freebsd.org/~seanc/libmemcache/).
 The main memcached site at http://danga.com/memcached/apis.bml seems to 
 indicate that the underlying libmemcache is no longer in active development.
+The module hasn't been updated since 2006.
 
-=head1 CAVEATS
+=head1 TODO
 
-Unless you know what you're getting yourself into, don't try to subclass this 
-module just yet. Internal structures may change without notice.
+Check and improve compatibility with Cache::Memcached::Fast.
+
+Add forget_dead_hosts() for greater Cache::Memcached compatibility?
+
+Test with Cache::Memcached::Managed.
+
+Implement namespace via MEMCACHED_BEHAVIOR_HASH_WITH_PREFIX_KEY.
+
+Treat PERL_LIBMEMCACHED_OPTIMIZE as the default and add a subclass that
+handles the arrayref master key concept. Once namespace is handles by
+libmemcached then the custom methods (get set add replace prepend append cas
+delete) can then all be removed and the libmemcached ones used directly.
+The effect on performance should be significant.
+
+Redo tools/benchmarks.pl performance tests (ensuring that methods are not called in
+void context unless it's appropriate).
+
+Try using Cache::Memcached::Fast's test suite to test this module.
 
 =head1 AUTHOR
 
 Copyright (c) 2008 Daisuke Maki E<lt>daisuke@endeworks.jpE<gt>
+
+With contributions by Tim Bunce.
 
 =head1 LICENSE
 

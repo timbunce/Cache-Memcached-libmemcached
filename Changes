@@ -1,6 +1,16 @@
 Changes
 =======
 
+0.03001 - 27 Oct 2010
+  - Documented available libmemcached behaviours.
+  - All libmemcached behaviours can now be set via new({ behaviour_... => ... }).
+  - Assorted documentation additions and cleanups.
+  - Added support for server weights.
+  - Added support for Cache::Memcached::Fast style hashref server specification.
+  - Added $keys parameter to stats()
+  - Removed malloc, sizes, and self from default stats()
+  - Require Memcached::libmemcached 0.4403
+
 0.02011 - 26 Oct 2010
   - Many more libmemcached behaviours are now accessible.
   - walk_stats() now returns many more items in the totals hash
