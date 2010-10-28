@@ -1,0 +1,4 @@
+Cache-Memcached-libmemcached-*
+.git
+MANIFEST.SKIP
+lib/Cache/Memcached/libmemcachedAsFast.pm
