@@ -182,6 +182,10 @@ sub set_servers
 {
     my $self = shift;
     my $servers = shift || [];
+
+    # $self->{servers} = []; # for compatibility with Cache::Memcached
+
+    # XXX should delete any existing servers from libmemcached
     foreach my $server (@$servers) {
         $self->server_add($server);
     }
@@ -212,6 +216,9 @@ sub server_add
     } else {
         $self->memcached_server_add_unix_socket_with_weight( $server, $weight );
     }
+
+    # for compatibility with Cache::Memcached
+    # push @{$self->{servers}}, $server;
 }
 
 
@@ -309,6 +316,19 @@ sub version {
     $_[0]->memcached_version();
 }
 
+sub server_versions {
+    my $self = shift;
+    my %versions;
+    # XXX not optimal, libmemcached knows these values without having to send a stats request
+    $self->walk_stats('', sub {
+        my ($key, $value, $hostport) = @_;
+        $versions{$hostport} = $value if $key eq 'version';
+        return;
+    });
+    return \%versions;
+}
+
+
 sub stats
 {
     my $self = shift;
@@ -358,6 +378,12 @@ sub stats
 
     return \%h;
 }
+
+# for compatability with Cache::Memcached and Cache::Memcached::Managed 0.20:
+# https://rt.cpan.org/Ticket/Display.html?id=62512
+# sub sock_to_host { undef }
+# sub get_sock { undef }
+# sub forget_dead_hosts { undef }
 
 1;
 
@@ -459,6 +485,8 @@ be compressed by set and decompressed by get.
 Prefix all keys with the provided namespace value. That is, if you set
 namespace to "app1:" and later do a set of "foo" to "bar", memcached is
 actually seeing you set "app1:foo" to "bar".
+
+The namespace string should be no more than 128 bytes (MEMCACHED_PREFIX_KEY_MAX_SIZE).
 
 =head3 debug
 
@@ -653,6 +681,15 @@ Support for "cas" is disabled by default as there is a slight performance
 penalty. To enable it use the C<support_cas> option to L</new>.
 
 
+=head1 Cache::Memcached::Fast COMPATIBLE METHODS
+
+=head2 server_versions
+
+    $href = $memd->server_versions;
+
+Returns a reference to hash, where $href->{$server} holds corresponding server
+version string, e.g. "1.4.4". $server is either host:port or /path/to/unix.sock.
+
 =head1 Cache::Memcached::libmemcached SPECIFIC METHODS
 
 These methods are libmemcached-specific.
@@ -694,7 +731,7 @@ Return the current value of compress_savings
 =head1 BEHAVIOR CUSTOMIZATION
 
 Memcached::libmemcached supports I<many> 'behaviors' that can be used to
-configure the interaction with the servers.
+configure the behavior of the library and its interaction with the servers.
 
 Certain libmemcached behaviors can be configured with the following methods.
 
@@ -748,15 +785,13 @@ Use C<is_binary_protocol> to determine the current setting.
 
 =head1 OPTIMIZE FLAG
 
-There's an EXPERIMENTAL optimization available for some corner cases, where
-if you know before hand that you won't be using some features, you can
-disable them all together for some performance boost. To enable this mode,
-set an environment variable named PERL_LIBMEMCACHED_OPTIMIZE to a true value
+If you are 100% sure that you won't be using the master key support (where 
+you provide an arrayref as the key) you can get about 4~5% performance boost
+by setting the environment variable named PERL_LIBMEMCACHED_OPTIMIZE to a true
+value I<before> loading the module.
 
-=head2 NO MASTER KEY SUPPORT
-
-If you are 100% sure that you won't be using the master key support, where 
-you provide an arrayref as the key, you get about 4~5% performance boost.
+This is an EXPERIMENTAL optimization and will possibly be replaced by
+implementing the methods in C in Memcached::libmemcached.
 
 =head1 VARIOUS MEMCACHED MODULES
 
@@ -809,20 +844,20 @@ Check and improve compatibility with Cache::Memcached::Fast.
 
 Add forget_dead_hosts() for greater Cache::Memcached compatibility?
 
-Test with Cache::Memcached::Managed.
-
 Implement namespace via MEMCACHED_BEHAVIOR_HASH_WITH_PREFIX_KEY.
 
 Treat PERL_LIBMEMCACHED_OPTIMIZE as the default and add a subclass that
-handles the arrayref master key concept. Once namespace is handles by
+handles the arrayref master key concept. Once namespace is handled by
 libmemcached then the custom methods (get set add replace prepend append cas
 delete) can then all be removed and the libmemcached ones used directly.
-The effect on performance should be significant.
+Alternatively, add master key via array ref support to the methods in
+::libmemcached. Either way the effect on performance should be significant.
 
 Redo tools/benchmarks.pl performance tests (ensuring that methods are not called in
 void context unless it's appropriate).
 
 Try using Cache::Memcached::Fast's test suite to test this module.
+Via private lib/Cache/Memcached/libmemcachedAsFast.pm wrapper.
 
 =head1 AUTHOR
 
