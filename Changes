@@ -8,6 +8,7 @@ Changes
   - Added support for Cache::Memcached::Fast style hashref server specification.
   - Added $keys parameter to stats()
   - Added server_versions() method for Cache::Memcached::Fast compatibility.
+  - Added the documented enable_compress() method for Cache::Memcached compatibility.
   - Removed malloc, sizes, and self from default stats()
   - Require Memcached::libmemcached 0.4403
   - Warn if namespace > 128 bytes (to allow future optimization).

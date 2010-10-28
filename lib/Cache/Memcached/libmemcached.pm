@@ -35,6 +35,8 @@ BEGIN
         EOSUB
         die if $@;
     }
+    # for Cache::Memcached compatibility
+    sub enable_compress { shift->set_compress_enable(@_) }
 
     # XXX this should be done via subclasses
     if (OPTIMIZE) {
