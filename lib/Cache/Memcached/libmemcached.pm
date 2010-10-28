@@ -1,8 +1,10 @@
 package Cache::Memcached::libmemcached;
 
+require bytes;
 use strict;
 use warnings;
 
+use Memcached::libmemcached qw(MEMCACHED_PREFIX_KEY_MAX_SIZE);
 use base qw(Memcached::libmemcached);
 
 use Carp qw(croak carp);
@@ -153,6 +155,11 @@ sub new
     }
 
     $self->{namespace} = delete $args{namespace} || '';
+    # warn about a future limitation (default max will be 128)
+    if (bytes::length($self->{namespace}) > MEMCACHED_PREFIX_KEY_MAX_SIZE) {
+        carp sprintf "namespace '$self->{namespace}' is longer than %d bytes, which will fail in future versions",
+            $self->{namespace}, MEMCACHED_PREFIX_KEY_MAX_SIZE;
+    }
 
 
     $self->trace_level(delete $args{debug}) if exists $args{debug};
@@ -686,31 +693,21 @@ Return the current value of compress_savings
 
 =head1 BEHAVIOR CUSTOMIZATION
 
-Certain libmemcached behaviors can be configured with the following
-methods.
+Memcached::libmemcached supports I<many> 'behaviors' that can be used to
+configure the interaction with the servers.
+
+Certain libmemcached behaviors can be configured with the following methods.
 
 (NOTE: This API is not fixed yet)
 
-=head2 behavior_set
-
-=head2 behavior_get
-
-If you want to customize something that we don't have a wrapper for,
-you can directly use these method.
-
 =head2 set_no_block
 
-  Cache::Memcached::libmemcached->new({
-    ...
-    no_block => 1
-  });
-  # or 
   $memd->set_no_block( 1 );
 
 Set to use blocking/non-blocking I/O. When this is in effect, get() becomes
 flaky, so don't attempt to call it. This has the most effect for set()
 operations, because libmemcached stops waiting for server response after
-writing to the socket (set() will also always return success)
+writing to the socket (set() will also always return success).
 
 Please consult the man page for C<memcached_behavior_set()> for details 
 before setting.
@@ -739,23 +736,15 @@ Set the hashing algorithm used.
 
 Get the hashing algorithm used.
 
-=head2 set_support_cas
-
-  $memd->set_support_cas($boolean);
-  # or
-  $memd = Cache::Memcached::libmemcached->new( {
-    ...
-    support_cas => 1
-  } );
-
-Enable/disable CAS support.
-
 =head2 set_binary_protocol
+
+=head2 is_binary_protocol
 
   $memd->set_binary_protocol( 1 );
   $binary = $memd->is_binary_protocol();
 
-Enable/disable binary protocol
+Use C<set_binary_protocol> to enable/disable binary protocol.
+Use C<is_binary_protocol> to determine the current setting.
 
 =head1 OPTIMIZE FLAG
 
