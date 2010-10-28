@@ -1,8 +1,17 @@
-# Make Cache::Memcached::libmemcached appear to be Cache::Memcached::Fast
-#
-# Can be used to run the Cache::Memcached::Fast with Cache::Memcached::libmemcached
-# to test cmpatibility
-# PERL5OPT="-Mlib=$HOME/repros/Cache-Memcached-libmemcached/blib/lib -MCache::Memcached::libmemcachedAsFast" make test
+=head1 NAME
+
+Cache::Memcached::libmemcachedAsFast - Hack to impersonate Cache::Memcached::Fast
+
+=head1 SYNPOSIS
+
+Make Cache::Memcached::libmemcached appear to be Cache::Memcached::Fast.
+
+Can be used to run the Cache::Memcached::Fast with Cache::Memcached::libmemcached
+to test cmpatibility
+
+    PERL5OPT="-MCache::Memcached::libmemcachedAsFast" make test
+
+=cut
 
 die "Cache::Memcached::Fast already loaded"
     if $Cache::Memcached::Fast::VERSION;
