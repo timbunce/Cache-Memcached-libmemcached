@@ -3,18 +3,19 @@ use lib 't/lib';
 use libmemcached_test;
 use Test::More;
 
+my $namespace = "fooblabaz";
 
-my $cache = libmemcached_test_create( {
-    namespace => "fooblabaz",
-} );
+my $cache      = libmemcached_test_create( { namespace => $namespace } );
+my $cache_nons = libmemcached_test_create( { } );
 
-plan(tests => 11);
+plan(tests => 13);
 isa_ok($cache, "Cache::Memcached::libmemcached");
 
 {
     $cache->set("foo", "bar", 300);
     my $val = $cache->get("foo");
     is($val, "bar", "simple value");
+    is($cache_nons->get("${namespace}foo"), "bar", "simple value via nons");
 }
 
 {
@@ -33,6 +34,7 @@ isa_ok($cache, "Cache::Memcached::libmemcached");
 {
     ok( $cache->set("foo", 1), "prep for incr" );
     is( $cache->incr("foo"), 2, "incr returns 1 more than previous" );
+    is($cache_nons->get("${namespace}foo"), 2, "simple value via nons");
     is( $cache->decr("foo"), 1, "decr returns 1 less than previous" );
 }
 
