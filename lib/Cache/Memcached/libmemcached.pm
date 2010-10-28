@@ -314,9 +314,6 @@ sub disconnect_all {
     $_[0]->memcached_quit();
 }
 
-sub version {
-    $_[0]->memcached_version();
-}
 
 sub server_versions {
     my $self = shift;
@@ -508,7 +505,6 @@ Any of the I<many> behaviors documented in
 L<Memcached::libmemcached::memcached_behavior> can be specified by using
 argument key names that start with C<behavior_>. For example:
 
-    behavior_support_cas => 1,
     behavior_ketama_weighted => 1,
     behavior_noreply => 1,
     behavior_number_of_replicas => 2,

@@ -11,6 +11,7 @@ Changes
   - Added server_versions() method for Cache::Memcached::Fast compatibility.
   - Added the documented enable_compress() method for Cache::Memcached compatibility.
   - Require Memcached::libmemcached 0.4403
+  - Removed undocumented version() method.
   - Warn if namespace > 128 bytes (to allow future optimization).
   - Assorted documentation additions and cleanups.
 

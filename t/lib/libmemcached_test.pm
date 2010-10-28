@@ -26,6 +26,8 @@ sub libmemcached_test_servers {
 sub libmemcached_test_create {
     my ($args) = @_;
 
+    my $min_version = delete $args->{min_version};
+
     $args->{ servers } = [ libmemcached_test_servers() ];
 
     if ($ENV{LIBMEMCACHED_BINARY_PROTOCOL}) {
@@ -40,30 +42,25 @@ sub libmemcached_test_create {
     plan skip_all => "Can't talk to any memcached servers"
         if (! defined $value || $time ne $value);
 
-#    plan skip_all => "memcached server version less than $args->{min_version}"
-#        if $args->{min_version}
-#        && not libmemcached_version_ge($memc, $args->{min_version});
+    plan skip_all => "memcached server version less than $args->{min_version}"
+        if $min_version && not libmemcached_version_ge($cache, $min_version);
 
     return $cache;
 }
 
-#sub libmemcached_version_ge {
-#    my ($memc, $min_version) = @_;
-#    my $numify = sub {
-#        my $version = shift;
-#        my @version = split /\./, $version;
-#        return $version[0] + $version[1] / 100 + $version[2] / 100_000;
-#    };
-#
-#    my @memcached_version = memcached_version($memc);
-#
-#    $min_version = $numify->( $min_version );
-#    foreach my $version (map { $numify->($_) } @memcached_version) {
-#        return 1 if $version >= $min_version;
-#        return 0 if $version <  $min_version;
-#    }
-#    return 1; # identical versions
-#}
+
+sub libmemcached_version_ge {
+    my ($memc, $min_version) = @_;
+    my @min_version = split /\./, $min_version;
+
+    my @memcached_version = $memc->memcached_version;
+
+    for (0,1,2) {
+        return 1 if $memcached_version[$_] > $min_version[$_];
+        return 0 if $memcached_version[$_] < $min_version[$_];
+    }
+    return 1; # identical versions
+}
 
 
 sub libmemcached_test_key {
