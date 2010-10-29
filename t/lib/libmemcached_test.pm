@@ -42,7 +42,7 @@ sub libmemcached_test_create {
     plan skip_all => "Can't talk to any memcached servers"
         if (! defined $value || $time ne $value);
 
-    plan skip_all => "memcached server version less than $args->{min_version}"
+    plan skip_all => "memcached server version less than $min_version"
         if $min_version && not libmemcached_version_ge($cache, $min_version);
 
     return $cache;
