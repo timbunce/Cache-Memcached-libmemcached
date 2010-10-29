@@ -1,13 +1,12 @@
 Changes
 =======
 
-0.03001 - 28 Oct 2010
-  - Require Memcached::libmemcached 0.4404
+0.03001 - 29 Oct 2010
+  - Require Memcached::libmemcached 0.4405
   - Documented available libmemcached behaviours.
   - All libmemcached behaviours can now be set via new({ behaviour_... => ... })!
   - Optimized namespace support via libmemcached 'prefix key' mechanism.
   - Fixed methods like incr() and decr() that didn't apply the namespace.
-  - Fixed get_multi() to not add namespace to the returned hash keys.
   - Added namespace() method for Cache::Memcached::Fast compatibility.
   - Added support for Cache::Memcached::Fast style hashref server specification.
   - Added support for server weights.
