@@ -4,7 +4,10 @@ require bytes;
 use strict;
 use warnings;
 
-use Memcached::libmemcached qw(MEMCACHED_PREFIX_KEY_MAX_SIZE);
+use Memcached::libmemcached qw(
+    MEMCACHED_CALLBACK_PREFIX_KEY
+    MEMCACHED_PREFIX_KEY_MAX_SIZE
+);
 use base qw(Memcached::libmemcached);
 
 use Carp qw(croak carp);
@@ -45,12 +48,7 @@ BEGIN
         foreach my $method qw(get set add replace prepend append cas delete) {
             eval <<"            EOSUB";
                 sub $method {
-                    my \$self = shift;
-                    my \$key  = shift;
-                    if (\$self->{namespace}) {
-                        \$key = "\$self->{namespace}\$key";
-                    }
-                    \$self->SUPER::memcached_${method}(\$key, \@_)
+                    shift->SUPER::memcached_${method}(\@_)
                 }
             EOSUB
             die if $@;
@@ -65,14 +63,9 @@ BEGIN
                 sub $method { 
                     my \$self = shift;
                     my \$key  = shift;
-                    my \$master_key;
-                    if (ref \$key eq 'ARRAY') {
-                        (\$master_key, \$key) = @\$key;
-                    }
-
-                    if (\$self->{namespace}) {
-                        \$key = "\$self->{namespace}\$key";
-                    }
+                    return \$self->SUPER::memcached_${method}(\$key, \@_)
+                        unless ref \$key;
+                    (my \$master_key, \$key) = @\$key;
                     if (\$master_key) {
                         \$self->SUPER::memcached_${method}_by_key(\$master_key, \$key, \@_);
                     } else {
@@ -128,6 +121,11 @@ sub new
 
     my $self = $class->SUPER::new();
 
+    $self->trace_level(delete $args{debug}) if exists $args{debug};
+
+    $self->namespace(delete $args{namespace})
+        if exists $args{namespace};
+
     $self->{compress_threshold} = delete $args{compress_threshold};
     # Add support for Cache::Memcache::Fast's compress_ratio
     $self->{compress_savingsS}  = delete $args{compress_savings} || 0.20;
@@ -156,15 +154,6 @@ sub new
         $self->memcached_behavior_set(&$behavior(), $value);
     }
 
-    $self->{namespace} = delete $args{namespace} || '';
-    # warn about a future limitation (default max will be 128)
-    if (bytes::length($self->{namespace}) > MEMCACHED_PREFIX_KEY_MAX_SIZE) {
-        carp sprintf "namespace '$self->{namespace}' is longer than %d bytes, which will fail in future versions",
-            $self->{namespace}, MEMCACHED_PREFIX_KEY_MAX_SIZE;
-    }
-
-
-    $self->trace_level(delete $args{debug}) if exists $args{debug};
     delete $args{readonly};
     delete $args{no_rehash};
 
@@ -178,6 +167,19 @@ sub new
     );
 
     return $self;
+}
+
+sub namespace {
+    my $self = shift;
+
+    my $old_namespace = $self->memcached_callback_get(MEMCACHED_CALLBACK_PREFIX_KEY);
+    if (@_) {
+        my $namespace = shift;
+        $self->memcached_callback_set(MEMCACHED_CALLBACK_PREFIX_KEY, $namespace)
+            or carp $self->errstr;
+    }
+
+    return $old_namespace;
 }
 
 sub set_servers
@@ -273,9 +275,6 @@ sub incr
     my $self = shift;
     my $key  = shift;
     my $offset = shift || 1;
-    if ($self->{namespace}) {
-        $key = "$self->{namespace}$key";
-    }
     my $val = 0;
     $self->memcached_increment($key, $offset, $val);
     return $val;
@@ -286,22 +285,11 @@ sub decr
     my $self = shift;
     my $key  = shift;
     my $offset = shift || 1;
-    if ($self->{namespace}) {
-        $key = "$self->{namespace}$key";
-    }
     my $val = 0;
     $self->memcached_decrement($key, $offset, $val);
     return $val;
 }
 
-sub get_multi {
-    my $self = shift;
-
-    my $namespace = $self->{namespace};
-    my @keys = $namespace ? map { "$namespace$_" } @_ : @_;
-    my $hash = $self->SUPER::get_multi(@keys);
-    return $namespace ? +{ map { ($_ => $hash->{"$namespace$_"}) } @_ } : $hash;
-}
 
 sub flush_all
 {
@@ -481,11 +469,7 @@ be compressed by set and decompressed by get.
 
 =head3 namespace
 
-Prefix all keys with the provided namespace value. That is, if you set
-namespace to "app1:" and later do a set of "foo" to "bar", memcached is
-actually seeing you set "app1:foo" to "bar".
-
-The namespace string should be no more than 128 bytes (MEMCACHED_PREFIX_KEY_MAX_SIZE).
+The value is passed to the L</namespace> method.
 
 =head3 debug
 
@@ -527,6 +511,20 @@ These are equivalent to the same options prefixed with C<behavior_>.
 
 Calls L</server_add> for each element of the supplied arrayref.
 See L</server_add> for details of valid values, including how to specify weights.
+
+=head2 namespace
+
+  $memd->namespace;
+  $memd->namespace($string);
+
+Without the argument return the current namespace prefix.  With the
+argument set the namespace prefix to I<$string>, and return the old prefix.
+
+The effect is to pefix all keys with the provided namespace value. That is, if
+you set namespace to "app1:" and later do a set of "foo" to "bar", memcached is
+actually seeing you set "app1:foo" to "bar".
+
+The namespace string must be less than 128 bytes (MEMCACHED_PREFIX_KEY_MAX_SIZE).
 
 =head2 get
 
@@ -842,11 +840,9 @@ Check and improve compatibility with Cache::Memcached::Fast.
 
 Add forget_dead_hosts() for greater Cache::Memcached compatibility?
 
-Implement namespace via MEMCACHED_BEHAVIOR_HASH_WITH_PREFIX_KEY.
-
 Treat PERL_LIBMEMCACHED_OPTIMIZE as the default and add a subclass that
-handles the arrayref master key concept. Once namespace is handled by
-libmemcached then the custom methods (get set add replace prepend append cas
+handles the arrayref master key concept. Then
+the custom methods (get set add replace prepend append cas
 delete) can then all be removed and the libmemcached ones used directly.
 Alternatively, add master key via array ref support to the methods in
 ::libmemcached. Either way the effect on performance should be significant.
