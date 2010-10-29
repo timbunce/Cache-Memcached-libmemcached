@@ -853,6 +853,9 @@ void context unless it's appropriate).
 Try using Cache::Memcached::Fast's test suite to test this module.
 Via private lib/Cache/Memcached/libmemcachedAsFast.pm wrapper.
 
+Implement automatic no-reply on calls in void context (like Cache::Memcached::Fast).
+That should yield a signigicant performance boost.
+
 =head1 AUTHOR
 
 Copyright (c) 2008 Daisuke Maki E<lt>daisuke@endeworks.jpE<gt>
