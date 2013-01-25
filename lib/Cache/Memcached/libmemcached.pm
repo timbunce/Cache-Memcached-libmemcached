@@ -169,7 +169,7 @@ sub new
     # behavior options
     foreach my $option (qw(no_block hashing_algorithm distribution_method binary_protocol)) {
         my $method = "set_$option";
-        $self->$method( $args->{$option} ) if exists $args->{$option};
+        $self->$method( $args{$option} ) if exists $args{$option};
     }
 
     return $self;

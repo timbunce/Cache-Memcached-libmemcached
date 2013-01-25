@@ -23,9 +23,7 @@ isa_ok($cache, "Cache::Memcached::libmemcached");
     is_deeply( $h, \%expected, "got all the expected values");
 }
 
-TODO: {
-    local $TODO = "Memcached::libmemcached flag support required";
-
+{
     my $key = 'complex-get_multi';
     my %data = (foo => [ qw(1 2 3) ]);
 
@@ -34,7 +32,6 @@ TODO: {
     my $h = $cache->get_multi($key);
 
     is_deeply($h->{$key}, \%data);
-
 }
 
 {
