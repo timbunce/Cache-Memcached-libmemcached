@@ -31,7 +31,7 @@ BEGIN
     }
 
     # accessors
-    foreach my $field qw(compress_enable compress_threshold compress_savings) {
+    foreach my $field (qw(compress_enable compress_threshold compress_savings)) {
         eval sprintf(<<"        EOSUB", $field, $field, $field, $field);
             sub set_%s { \$_[0]->{%s} = \$_[1] }
             sub get_%s { \$_[0]->{%s} }
@@ -45,7 +45,7 @@ BEGIN
     if (OPTIMIZE) {
         # If the optimize flag is enabled, we do not support master key
         # generation, cause we really care about the speed.
-        foreach my $method qw(get set add replace prepend append cas delete) {
+        foreach my $method (qw(get set add replace prepend append cas delete)) {
             eval <<"            EOSUB";
                 sub $method {
                     shift->SUPER::memcached_${method}(\@_)
@@ -58,7 +58,7 @@ BEGIN
         # Mental note. We only do this cause while we're faster than
         # Cache::Memcached::Fast, *even* when the above optimization isn't
         # toggled.
-        foreach my $method qw(get set add replace prepend append cas delete) {
+        foreach my $method (qw(get set add replace prepend append cas delete)) {
             eval <<"            EOSUB";
                 sub $method { 
                     my \$self = shift;
@@ -165,6 +165,12 @@ sub new
         # Closures so we have reference to $self
         $self->_mk_callbacks()
     );
+
+    # behavior options
+    foreach my $option (qw(no_block hashing_algorithm distribution_method binary_protocol)) {
+        my $method = "set_$option";
+        $self->$method( $args->{$option} ) if exists $args->{$option};
+    }
 
     return $self;
 }
