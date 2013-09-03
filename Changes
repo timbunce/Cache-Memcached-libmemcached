@@ -1,6 +1,10 @@
 Changes
 =======
 
+0.04001 - 3rd Sept 2013
+  - Require Memcached::libmemcached 1.001701
+  - Fixed incr and decr methods to return undef on failure.
+
 0.03001 - 29 Oct 2010
   - Require Memcached::libmemcached 0.4405
   - Documented available libmemcached behaviours.

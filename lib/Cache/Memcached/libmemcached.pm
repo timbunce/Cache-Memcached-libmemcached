@@ -4,7 +4,7 @@ require bytes;
 use strict;
 use warnings;
 
-use Memcached::libmemcached qw(
+use Memcached::libmemcached 1.001701, qw(
     MEMCACHED_CALLBACK_PREFIX_KEY
     MEMCACHED_PREFIX_KEY_MAX_SIZE
 );
@@ -14,7 +14,7 @@ use Carp qw(croak carp);
 use Scalar::Util qw(weaken);
 use Storable ();
 
-our $VERSION = '0.03001';
+our $VERSION = '0.04001';
 
 use constant HAVE_ZLIB    => eval { require Compress::Zlib } && !$@;
 use constant F_STORABLE   => 1;
@@ -282,7 +282,7 @@ sub incr
     my $key  = shift;
     my $offset = shift || 1;
     my $val = 0;
-    $self->memcached_increment($key, $offset, $val);
+    $self->memcached_increment($key, $offset, $val) || return undef;
     return $val;
 }
 
@@ -292,7 +292,7 @@ sub decr
     my $key  = shift;
     my $offset = shift || 1;
     my $val = 0;
-    $self->memcached_decrement($key, $offset, $val);
+    $self->memcached_decrement($key, $offset, $val) || return undef;
     return $val;
 }
 
